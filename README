@@ -1,0 +1,223 @@
+import numpy as np
+import pandas as pd
+import yfinance as yf
+
+
+class PortfolioRiskAnalyzer:
+    """
+    A comprehensive risk management tool for portfolio analysis
+    """
+
+    def __init__(self, portfolio_data):
+        """
+        Initialize with portfolio data
+
+        Parameters:
+        portfolio_data: DataFrame with columns ['date', 'returns'] or dict of asset returns
+        """
+        self.portfolio_data = portfolio_data
+        self.returns = None
+
+    def _to_returns_array(self) -> np.ndarray:
+        """Return portfolio returns as a clean 1D numpy array (NaNs removed)."""
+        if isinstance(self.portfolio_data, pd.DataFrame):
+            arr = self.portfolio_data['returns'].to_numpy()
+        else:
+            arr = np.asarray(self.portfolio_data, dtype=float)
+        arr = np.ravel(arr)
+        if arr.size == 0:
+            return arr
+        return arr[~np.isnan(arr)]
+
+    def calculate_var(self, confidence_level=0.95, method='historical'):
+        """
+        Calculate Value at Risk (VaR)
+
+        Parameters:
+        confidence_level: float (e.g., 0.95 for 95% confidence)
+        method: 'historical', 'parametric', or 'monte_carlo'
+
+        Returns:
+        VaR value
+        """
+        if method == 'historical':
+            return self._historical_var(confidence_level)
+        elif method == 'parametric':
+            return self._parametric_var(confidence_level)
+        elif method == 'monte_carlo':
+            return self._monte_carlo_var(confidence_level)
+        else:
+            raise ValueError(f"Unknown method: {method}. Use 'historical', 'parametric', or 'monte_carlo'")
+
+    def _historical_var(self, confidence_level):
+        """Calculate VaR using historical simulation (positive number)."""
+        returns = self._to_returns_array()
+        if returns.size == 0:
+            return 0.0
+        q = np.percentile(returns, (1 - confidence_level) * 100)
+        return float(abs(q))
+
+    def _parametric_var(self, confidence_level):
+        """Calculate VaR assuming normal distribution (returns ~ N(mean, std))."""
+        returns = self._to_returns_array()
+        if returns.size == 0:
+            return 0.0
+
+        mean = float(np.mean(returns))
+        std = float(np.std(returns, ddof=1)) if returns.size > 1 else float(np.std(returns))
+        if std == 0 or np.isnan(std):
+            return 0.0
+
+        from scipy import stats
+        z = float(stats.norm.ppf(confidence_level))
+        var = max(0.0, -(mean - z * std))
+        return float(var)
+
+    def _monte_carlo_var(self, confidence_level, days=252, num_simulations=1000):
+        """Calculate VaR using Monte Carlo simulation."""
+        returns = self._to_returns_array()
+        if returns.size == 0:
+            return 0.0
+
+        mean_return = float(np.mean(returns))
+        std_return = float(np.std(returns, ddof=1)) if returns.size > 1 else float(np.std(returns))
+
+        if std_return == 0 or np.isnan(std_return):
+            det_total = (1.0 + mean_return) ** days - 1.0
+            final_returns = np.full(num_simulations, det_total)
+        else:
+            rng = np.random.default_rng()
+            final_returns = np.empty(num_simulations)
+            for i in range(num_simulations):
+                daily_returns = rng.normal(mean_return, std_return, days)
+                final_returns[i] = np.prod(1.0 + daily_returns) - 1.0
+
+        var = float(abs(np.percentile(final_returns, (1 - confidence_level) * 100)))
+        return var
+
+    def calculate_cvar(self, confidence_level=0.95):
+        """
+        Calculate Conditional Value at Risk (Expected Shortfall).
+        Returns a positive number representing the average loss beyond VaR.
+        """
+        returns = self._to_returns_array()
+        if returns.size == 0:
+            return 0.0
+
+        var = self._historical_var(confidence_level)
+        threshold = -var
+        tail = returns[returns <= threshold]
+        if tail.size == 0:
+            return float(var)
+        cvar = -float(np.mean(tail))
+        return abs(cvar)
+
+    def monte_carlo_simulation(self, initial_investment=10000, days=252, num_simulations=1000):
+        """
+        Run Monte Carlo simulation for portfolio value.
+
+        Parameters:
+        - initial_investment: Starting portfolio value
+        - days: Number of days to simulate (252 ≈ 1 trading year)
+        - num_simulations: Number of simulation paths
+
+        Returns:
+        Numpy array of final simulated portfolio values.
+        """
+        returns = self._to_returns_array()
+        if returns.size == 0:
+            return np.full(num_simulations, np.nan)
+
+        mean_return = float(np.mean(returns))
+        std_return = float(np.std(returns, ddof=1)) if returns.size > 1 else float(np.std(returns))
+
+        results = np.empty(num_simulations)
+        if std_return == 0 or np.isnan(std_return):
+            final_value = initial_investment * ((1.0 + mean_return) ** days)
+            results.fill(final_value)
+            return results
+
+        rng = np.random.default_rng()
+        for i in range(num_simulations):
+            daily_returns = rng.normal(mean_return, std_return, days)
+            results[i] = initial_investment * np.prod(1.0 + daily_returns)
+
+        return results
+
+    def calculate_sharpe_ratio(self, risk_free_rate=0.02, periods_per_year: int = 252) -> float:
+        """
+        Compute the annualized Sharpe Ratio using daily returns (by default).
+
+        Parameters:
+        - risk_free_rate: Annual risk-free rate (e.g., 0.02 = 2%)
+        - periods_per_year: Number of return periods per year (252 for trading days)
+        """
+        returns = self._to_returns_array()
+        if returns.size == 0:
+            return 0.0
+
+        period_rf = (1.0 + risk_free_rate) ** (1.0 / periods_per_year) - 1.0
+        excess = returns - period_rf
+
+        std = float(np.std(excess, ddof=1)) if excess.size > 1 else float(np.std(excess))
+        if std == 0 or np.isnan(std):
+            return 0.0
+
+        sr = float(np.mean(excess)) / std
+        return sr * np.sqrt(periods_per_year)
+
+
+if __name__ == "__main__":
+    print("=" * 60)
+    print("PORTFOLIO RISK MANAGEMENT SYSTEM")
+    print("Capstone Project - Risk Analytics")
+    print("=" * 60)
+    print()
+
+    print(" Downloading real market data...")
+
+    ticker = "GOOGL"
+    stock_data = yf.download(ticker, period="1y", progress=False, auto_adjust=True)
+
+    stock_data['returns'] = stock_data['Close'].pct_change()
+    portfolio_returns = stock_data['returns'].dropna().values
+
+    print(f" Downloaded {len(portfolio_returns)} days of {ticker} data")
+    print(f" Date range: {stock_data.index[0].date()} to {stock_data.index[-1].date()}")
+    print()
+
+    analyzer = PortfolioRiskAnalyzer(portfolio_returns)
+
+    print(f"RISK METRICS FOR {ticker}")
+    print("-" * 60)
+    var_95_historical = analyzer.calculate_var(confidence_level=0.95, method='historical')
+    var_99_historical = analyzer.calculate_var(confidence_level=0.99, method='historical')
+    cvar_95 = analyzer.calculate_cvar(confidence_level=0.95)
+    sharpe_ratio = analyzer.calculate_sharpe_ratio()
+
+    print(f"Value at Risk (95% confidence):    {var_95_historical:.4f} ({var_95_historical * 100:.2f}%)")
+    print(f"Value at Risk (99% confidence):    {var_99_historical:.4f} ({var_99_historical * 100:.2f}%)")
+    print(f"Conditional VaR (95%):             {cvar_95:.4f} ({cvar_95 * 100:.2f}%)")
+    print(f"Sharpe Ratio (Annualized):         {sharpe_ratio:.4f}")
+    print()
+
+    print(" MONTE CARLO SIMULATION")
+    print("-" * 60)
+    print("Running 10,000 simulations for 1-year period...")
+
+    mc_simulations = analyzer.monte_carlo_simulation(
+        initial_investment=100000,
+        days=252,
+        num_simulations=10000
+    )
+
+    print(f"Initial Investment:                ${100000:,.2f}")
+    print(f"Expected Value (Mean):             ${np.mean(mc_simulations):,.2f}")
+    print(f"Best Case (95th percentile):       ${np.percentile(mc_simulations, 95):,.2f}")
+    print(f"Worst Case (5th percentile):       ${np.percentile(mc_simulations, 5):,.2f}")
+    print(f"Probability of Loss:               {(mc_simulations < 100000).sum() / len(mc_simulations) * 100:.2f}%")
+    print()
+
+    print("=" * 60)
+    print(" System ready for further development")
+    print("=" * 60)
